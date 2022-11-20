@@ -1,0 +1,749 @@
+<!doctype html>
+<html>
+<head>
+	<script>
+		var cursor_x = 0, cursor_y = 0;
+		var prev_x = 0, prev_y = 0;
+		var cursor_dx = 0, cursor_dy = 0;
+		function update_cursor_pos(event)
+		{
+			let canvas = document.getElementById("glCanvas");
+			rect = canvas.getBoundingClientRect();
+			scaleX = canvas.width / rect.width;
+			scaleY = canvas.height / rect.height;
+			cursor_x = event.clientX - rect.left;
+			cursor_y = event.clientY - rect.top;
+			cursor_y = canvas.height-cursor_y;
+
+			cursor_dx = (cursor_x - prev_x), cursor_dy = (cursor_y - prev_y);
+			prev_x = cursor_x; prev_y = cursor_y;
+		}
+		document.addEventListener("mousemove", update_cursor_pos);
+
+		var cur_sim = "sim_gameoflife";
+		var do_restart_sim = false;
+		var new_render_size = -1;
+
+		function update_sim_size()
+		{
+			new_render_size = parseInt(document.getElementById("sim_size").value);
+		}
+
+		function update_view_size()
+		{
+
+		}
+
+		function update_cur_sim(id)
+		{
+			cur_sim = id;
+		}
+
+		function restart_sim()
+		{
+			do_restart_sim = true;
+		}
+	</script>
+</head>
+<body>
+	<div>
+		<input type="radio" id="sim_gameoflife" name="simulation" value="Game of Life" onchange="update_cur_sim(id)" checked/>
+		<label for="sim_gameoflife">Game of Life</label>
+		<input type="radio" id="sim_voronoi" name="simulation" value="Voronoi Diagram" onchange="update_cur_sim(id)"/>
+		<label for="sim_voronoi">Voronoi Diagram</label>
+		<input type="radio" id="sim_grass" name="simulation" value="Touch Grass" onchange="update_cur_sim(id)"/>
+		<label for="sim_grass">Touch Grass</label>
+	</div>
+	<div>
+		<!--
+		<label for="sim_size">Simulation Size:</label>
+		<input type="number" id="sim_size" value="512" onchange="update_sim_size()"/>
+		<br/>
+		<label for="view_size">View Size:</label>
+		<input type="number" id="view_size" value="512" onchange="update_view_size()"/>
+		<br/>
+			!-->
+		<div id="initial_points_div" hidden>
+			<label for="initial_points">Initial Points:</label>
+			<input type="number" id="initial_points" value="20"/>
+		</div>
+		<div id="randomness_div">
+			<label for="randomness">Randomness:</label>
+			<input type="number" id="randomness" value="20"/>
+		</div>
+		<input type="button" id="restart" value="Restart Simulation" onclick="restart_sim()"></input>
+	</div>
+	<canvas id="glCanvas" width="512" height="512"></canvas>
+	<script type="glsl" id="glsl_basic_frag">#version 300 es
+		out lowp vec4 fragColor;
+		uniform sampler2D tex;
+
+		void main()
+		{
+			fragColor = texelFetch(tex, ivec2(gl_FragCoord.xy), 0);
+		}
+	</script>
+	<script type="glsl" id="glsl_grass">#version 300 es
+		out lowp vec4 fragColor;
+		uniform lowp vec3 grass_color;
+
+		void main()
+		{
+			fragColor = vec4(grass_color, 1.0);
+		}
+	</script>
+	<script type="glsl" id="glsl_basic_vert">#version 300 es
+		layout(location = 0) in highp vec2 pos;
+
+		void main()
+		{
+			gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+		}
+	</script>
+	<script type="glsl" id="glsl_gameoflife">#version 300 es
+		out lowp vec4 fragColor;
+		uniform mediump float rand_seed;
+		uniform int size;
+		uniform mediump float temp; // randomness
+		uniform sampler2D tex;
+
+		// This following section is for RNG
+		// NOT MY CODE!!!
+
+			// A single iteration of Bob Jenkins' One-At-A-Time hashing algorithm.
+			uint hash(uint x)
+			{
+				x += (x << 10u);
+				x ^= (x >>  6u);
+				x += (x <<  3u);
+				x ^= (x >> 11u);
+				x += (x << 15u);
+				return x;
+			}
+
+			// Compound versions of the hashing algorithm I whipped together.
+			uint hash(uvec2 v) { return hash(v.x ^ hash(v.y)                        ); }
+			uint hash(uvec3 v) { return hash(v.x ^ hash(v.y) ^ hash(v.z)            ); }
+			uint hash(uvec4 v) { return hash(v.x ^ hash(v.y) ^ hash(v.z) ^ hash(v.w)); }
+
+			// Construct a float with half-open range [0:1] using low 23 bits.
+			// All zeroes yields 0.0, all ones yields the next smallest representable value below 1.0.
+			highp float floatConstruct(uint m)
+			{
+				const uint ieeeMantissa = 0x007FFFFFu; // binary32 mantissa bitmask
+				const uint ieeeOne      = 0x3F800000u; // 1.0 in IEEE binary32
+
+				m &= ieeeMantissa;                     // Keep only mantissa bits (fractional part)
+				m |= ieeeOne;                          // Add fractional part to 1.0
+
+				highp float  f = uintBitsToFloat(m);       // Range [1:2]
+				return f - 1.0;                        // Range [0:1]
+			}
+
+			// Pseudo-random value in half-open range [0:1].
+			highp float random(highp float x) { return floatConstruct(hash(floatBitsToUint(x))); }
+			highp float random(highp vec2  v) { return floatConstruct(hash(floatBitsToUint(v))); }
+			highp float random(highp vec3  v) { return floatConstruct(hash(floatBitsToUint(v))); }
+			highp float random(highp vec4  v) { return floatConstruct(hash(floatBitsToUint(v))); }
+
+		// Following sections ARE MY CODE
+
+
+		ivec2 directions[8] = ivec2[8](ivec2(-1, -1), ivec2(-1, 0), ivec2(0, -1), ivec2(0, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(1, 1), ivec2(1, 0));
+
+		ivec2 normalize_coord(ivec2 coord)
+		{
+			if (coord.x == size)
+			{
+				coord.x = 0;
+			}
+			else if (coord.x == -1)
+			{
+				coord.x = size - 1;
+			}
+			if (coord.y == size)
+			{
+				coord.y = 0;
+			}
+			else if (coord.y == -1)
+			{
+				coord.y = size - 1;
+			}
+			return coord;
+		}
+
+		void main()
+		{
+			highp float rand = random(vec3(gl_FragCoord.xy, rand_seed));
+
+			ivec2 coord = ivec2(gl_FragCoord.xy); //gl_FragCoord is the current coordinate
+			lowp vec4 px = texelFetch(tex, coord, 0);
+			// check for filled neighbors
+			lowp float sum = 0.0;
+			for (int i = 0; i < 8; i++)
+			{
+				if (texelFetch(tex, coord + directions[i], 0).r == 1.0)
+				{
+					sum++;
+				}
+			}
+			//so the sampler2d texture is the current screen in this program??
+			//oh but thats the c++ part right?
+			if (px.r == 0.0) // unfilled
+			{
+				if ((temp > 0.0 && rand < 0.1 / temp) || sum == 3.0)
+				{
+					px = vec4(1.0, 1.0, 1.0, 1.0);
+				}
+			}
+			else
+			{
+				if (sum < 2.0 || sum > 3.0)
+				{
+					px = vec4(0.0, 0.0, 0.0, 1.0);
+				}
+			}
+			fragColor = px;
+		}
+	</script>
+	<script type="glsl" id="glsl_voronoi">#version 300 es
+		out lowp vec4 fragColor;
+		uniform int size;
+		uniform sampler2D tex;
+
+		// hexagonal neighbors
+		ivec2 directions_odd[6] = ivec2[6](ivec2(-1, -1), ivec2(-1, 0), ivec2(0, -1), ivec2(-1, 1), ivec2(1, 0), ivec2(0, 1));
+		ivec2 directions_even[6] = ivec2[6](ivec2(1, -1), ivec2(1, 0), ivec2(0, -1), ivec2(1, 1), ivec2(-1, 0), ivec2(0, 1));
+
+		bool check_coord(ivec2 c)
+		{
+			if (c.x < 0 || c.x >= size)
+			{
+				return false;
+			}
+			if (c.y < 0 || c.y >= size)
+			{
+				return false;
+			}
+			return true;
+		}
+
+		void main()
+		{
+			ivec2 coord = ivec2(gl_FragCoord.xy); //gl_FragCoord is the current coordinate
+			lowp vec4 px = texelFetch(tex, coord, 0);
+			if (px.rgb != vec3(1.0, 1.0, 1.0))
+			{
+				fragColor = px;
+				return;
+			}
+
+			// check for filled neighbors
+			ivec2 directions[6];
+			if (coord.x % 2 == 0)
+			{
+				directions = directions_odd;
+			}
+			else
+			{
+				directions = directions_even;
+			}
+			lowp vec3 neighbor_color = vec3(0, 0, 0);
+			bool has_neighbor = false;
+			for (int i = 0; i < 6; i++)
+			{
+				if (check_coord(coord + directions[i]))
+				{
+					lowp vec3 cur_color = texelFetch(tex, coord + directions[i], 0).rgb;
+					if (cur_color != vec3(1.0, 1.0, 1.0) && cur_color != px.rgb)
+					{
+						neighbor_color = cur_color;
+						has_neighbor = true;
+					}
+				}
+			}
+			if (has_neighbor)
+			{
+				// fill current pixel
+				px = vec4(neighbor_color - vec3(0.002, 0.002, 0.002), 1.0);
+			}
+
+			fragColor = px;
+		}
+	</script>
+
+	<script src="grass.js"></script>
+	<script>
+		size = 512;
+		output_size = 512;
+		const canvas = document.querySelector("#glCanvas");
+		let gl = canvas.getContext("webgl2", { antialias: false });
+		if (gl == null)
+		{
+			alert("webgl2 initialization error, your browser may be too old");
+			throw new Error("webgl2 initialization error");
+		}
+
+		console.log(gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+
+		gl.clearColor(0.0, 0.0, 0.0, 1.0);
+		gl.clear(gl.COLOR_BUFFER_BIT);
+
+
+
+		// initialize shaders
+		let gameoflife, voronoi, grass;
+		const check_shader = (shader) =>
+		{
+			const message = gl.getShaderInfoLog(shader);
+			if (message.length > 0)
+			{
+				console.error(message);
+			}
+		};
+
+		gameoflife_shader = gl.createShader(gl.FRAGMENT_SHADER);
+		glsl_gameoflife_shader_str = document.getElementById("glsl_gameoflife").textContent;
+		gl.shaderSource(gameoflife_shader, glsl_gameoflife_shader_str);
+		gl.compileShader(gameoflife_shader);
+		check_shader(gameoflife_shader);
+
+		voronoi_shader = gl.createShader(gl.FRAGMENT_SHADER);
+		glsl_voronoi_shader_str = document.getElementById("glsl_voronoi").textContent;
+		gl.shaderSource(voronoi_shader, glsl_voronoi_shader_str);
+		gl.compileShader(voronoi_shader);
+		check_shader(voronoi_shader);
+
+		basic_frag_shader = gl.createShader(gl.FRAGMENT_SHADER);
+		glsl_basic_frag_shader_str = document.getElementById("glsl_basic_frag").textContent;
+		gl.shaderSource(basic_frag_shader, glsl_basic_frag_shader_str);
+		gl.compileShader(basic_frag_shader);
+
+		grass_shader = gl.createShader(gl.FRAGMENT_SHADER);
+		glsl_grass_shader_str = document.getElementById("glsl_grass").textContent;
+		gl.shaderSource(grass_shader, glsl_grass_shader_str);
+		gl.compileShader(grass_shader);
+		check_shader(grass_shader);
+
+		vert_shader = gl.createShader(gl.VERTEX_SHADER);
+		glsl_vert_shader_str = document.getElementById("glsl_basic_vert").textContent;
+		gl.shaderSource(vert_shader, glsl_vert_shader_str);
+		gl.compileShader(vert_shader)
+
+		gameoflife = gl.createProgram();
+		gl.attachShader(gameoflife, gameoflife_shader);
+		gl.attachShader(gameoflife, vert_shader);
+		gl.linkProgram(gameoflife);
+
+		voronoi = gl.createProgram();
+		gl.attachShader(voronoi, voronoi_shader);
+		gl.attachShader(voronoi, vert_shader);
+		gl.linkProgram(voronoi);
+
+		grass = gl.createProgram();
+		gl.attachShader(grass, grass_shader);
+		gl.attachShader(grass, vert_shader);
+		gl.linkProgram(grass);
+
+		gl.deleteShader(gameoflife_shader);
+		gl.deleteShader(voronoi_shader);
+		gl.deleteShader(basic_frag_shader);
+		gl.deleteShader(grass_shader);
+		gl.deleteShader(vert_shader);
+
+		gl.useProgram(voronoi);
+		gl.uniform1i(gl.getUniformLocation(voronoi, "size"), size);
+
+		gl.useProgram(gameoflife);
+		let seed_uniform_location = gl.getUniformLocation(gameoflife, "rand_seed");
+		gl.uniform1i(gl.getUniformLocation(gameoflife, "size"), size);
+		gl.uniform1f(gl.getUniformLocation(gameoflife, "temp"), parseFloat(document.getElementById("randomness").value));
+
+
+		// initialize textures
+		let texture1, texture2;
+		let init_texture = new Uint8Array(size * size * 3);
+
+		const generate_gameoflife_init = () =>
+		{
+			for (let x = 0; x < size; x++)
+			{
+				for (let y = 0; y < size; y++)
+				{
+					if (Math.random() < 0.5)
+					{
+						init_texture[(x * size + y) * 3] = 255;
+						init_texture[(x * size + y) * 3 + 1] = 255;
+						init_texture[(x * size + y) * 3 + 2] = 255;
+					}
+					else
+					{
+						init_texture[(x * size + y) * 3] = 0;
+						init_texture[(x * size + y) * 3 + 1] = 0;
+						init_texture[(x * size + y) * 3 + 2] = 0;
+					}
+				}
+			}
+		};
+
+		const generate_voronoi_init = () =>
+		{
+			for (let i = 0; i < init_texture.length; i++)
+			{
+				init_texture[i] = 255;
+			}
+			for (let i = 0; i < parseInt(document.getElementById("initial_points").value, 10); i++)
+			{
+				// coordinates from 0 to size - 1
+				x = Math.floor(Math.random() * size), y = Math.floor(Math.random() * size);
+				// colors from 80 to 254
+				init_texture[(x * size + y) * 3] = Math.floor(Math.random() * 175 + 80);
+				init_texture[(x * size + y) * 3 + 1] = Math.floor(Math.random() * 175 + 80);
+				init_texture[(x * size + y) * 3 + 2] = Math.floor(Math.random() * 175 + 80);
+			}
+		}
+
+		generate_gameoflife_init();
+
+		texture1 = gl.createTexture();
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, texture1);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+		gl.generateMipmap(gl.TEXTURE_2D);
+
+		texture2 = gl.createTexture();
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, texture2);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_NEAREST);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+		gl.generateMipmap(gl.TEXTURE_2D);
+
+		gl.bindTexture(gl.TEXTURE_2D, texture2);
+
+		// initialize framebuffers
+		let framebuf1, framebuf2;
+		framebuf1 = gl.createFramebuffer();
+		gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf1);
+		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture1, 0);
+
+		framebuf2 = gl.createFramebuffer();
+		gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf2);
+		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture2, 0);
+
+		gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf1);
+
+		active_framebuf1 = true;
+
+
+		let grass_vbo;
+		grass_vbo = gl.createBuffer();
+
+		let basic_vbo;
+		const basic_vertices =
+			[
+				-1.0, -1.0,
+				1.0, -1.0,
+				-1.0, 1.0,
+				1.0, -1.0,
+				-1.0, 1.0,
+				1.0, 1.0
+			]
+		basic_vbo = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, basic_vbo);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(basic_vertices), gl.STATIC_DRAW)
+		gl.vertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 2 * 4, 0);
+		gl.enableVertexAttribArray(0);
+
+		let grass_color_location;
+
+		Module.onRuntimeInitialized = () =>
+		{
+			const grass_size = 50;
+			const num_grass = 50;
+			const num_rows = 3;
+			const grass_color_change = 0.7;
+			const init_grass_color =
+				[
+					0.2 * Math.pow(grass_color_change, num_rows),
+					1.0 * Math.pow(grass_color_change, num_rows),
+					0.1 * Math.pow(grass_color_change, num_rows)
+				];
+
+			let points_ptr = new Array(num_rows), velocity_ptr = new Array(num_rows);
+			let grass_length = new Array(num_rows);
+			for (let i = 0; i < num_rows; i++)
+			{
+				points_ptr[i] = new Array(num_grass);
+				velocity_ptr[i] = new Array(num_grass);
+				grass_length[i] = new Array(num_grass);
+				for (let j = 0; j < num_grass; j++)
+				{
+					grass_length[i][j] = grass_size + Math.random() * grass_size / 2;
+					points_ptr[i][j] = _init_grass((j + i / num_rows) * (size / 50), 0, grass_length[i][j]);
+					velocity_ptr[i][j] = _init_velocity();
+				}
+			}
+			let itercnt = 0;
+
+			let cur_rendering = cur_sim;
+			const render = (timestamp) =>
+			{
+				// change render (simulation) size
+				if (new_render_size != -1 && new_render_size != size)
+				{
+					size = new_render_size;
+
+					// change uniform for size
+					gl.useProgram(gameoflife);
+					gl.uniform1i(gl.getUniformLocation(gameoflife, "size"), size);
+					gl.useProgram(voronoi);
+					gl.uniform1i(gl.getUniformLocation(voronoi, "size"), size);
+
+					// re-initialize textures to match new size
+					init_texture = new Uint8Array(size * size * 3);
+					if (cur_rendering == "sim_gameoflife")
+					{
+						generate_gameoflife_init();
+						gl.useProgram(gameoflife);
+					}
+					else if (cur_rendering == "sim_voronoi")
+					{
+						generate_voronoi_init();
+						gl.useProgram(voronoi);
+					}
+					else if (cur_rendering == "sim_grass")
+					{
+						gl.useProgram(grass);
+					}
+
+					// change texture sizes
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+					gl.generateMipmap(gl.TEXTURE_2D);
+					gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+					gl.generateMipmap(gl.TEXTURE_2D);
+				}
+				// change simulation
+				if (cur_rendering != cur_sim || do_restart_sim)
+				{
+					if (cur_sim == "sim_gameoflife")
+					{
+						document.getElementById("initial_points_div").setAttribute("hidden", "");
+						document.getElementById("randomness").removeAttribute("hidden");
+
+						// non-antialiased context
+						gl = canvas.getContext("webgl2", { antialias: false });
+
+						// use correct shader program and vbo
+						gl.useProgram(gameoflife);
+						gl.bindBuffer(gl.ARRAY_BUFFER, basic_vbo);
+						gl.vertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 2 * 4, 0);
+						gl.enableVertexAttribArray(0);
+
+						// re-initialize/reset textures
+						generate_gameoflife_init();
+						gl.bindTexture(gl.TEXTURE_2D, texture1);
+						gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+						gl.generateMipmap(gl.TEXTURE_2D);
+						gl.bindTexture(gl.TEXTURE_2D, texture2);
+						gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+						gl.generateMipmap(gl.TEXTURE_2D);
+
+						// update randomness value
+						gl.uniform1f(gl.getUniformLocation(gameoflife, "temp"), parseFloat(document.getElementById("randomness").value));
+
+						// set uniform location
+						seed_uniform_location = gl.getUniformLocation(gameoflife, "rand_seed");
+
+
+						// set tex 2 and framebuf 1
+						gl.bindTexture(gl.TEXTURE_2D, texture2);
+						gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf1);
+						active_framebuf1 = true;
+					}
+					else if (cur_sim == "sim_voronoi")
+					{
+						document.getElementById("initial_points_div").removeAttribute("hidden");
+						document.getElementById("randomness").setAttribute("hidden", "");
+
+						gl = canvas.getContext("webgl2", { antialias: false });
+
+						gl.useProgram(voronoi);
+						gl.bindBuffer(gl.ARRAY_BUFFER, basic_vbo);
+						gl.vertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 2 * 4, 0);
+						gl.enableVertexAttribArray(0);
+
+						generate_voronoi_init();
+						gl.bindTexture(gl.TEXTURE_2D, texture1);
+						gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+						gl.generateMipmap(gl.TEXTURE_2D);
+						gl.bindTexture(gl.TEXTURE_2D, texture2);
+						gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, size, size, gl.RGB, gl.UNSIGNED_BYTE, init_texture);
+						gl.generateMipmap(gl.TEXTURE_2D);
+
+
+						// set tex 2 and framebuf 1
+						gl.bindTexture(gl.TEXTURE_2D, texture2);
+						gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf1);
+						active_framebuf1 = true;
+					}
+					else if (cur_sim == "sim_grass")
+					{
+						document.getElementById("initial_points_div").setAttribute("hidden", "");
+						document.getElementById("randomness").setAttribute("hidden", "");
+
+						// antialiased context
+						gl = canvas.getContext("webgl2", { antialias: true });
+
+						// uses a different vbo
+						gl.useProgram(grass);
+						gl.bindBuffer(gl.ARRAY_BUFFER, grass_vbo);
+						gl.vertexAttribPointer(0, 2, gl.FLOAT, gl.FALSE, 2 * 4, 0);
+						gl.enableVertexAttribArray(0);
+
+						// set uniform location
+						grass_color_location = gl.getUniformLocation(grass, "grass_color");
+
+						gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+					}
+
+					cur_rendering = cur_sim;
+					do_restart_sim = false;
+
+					// clear previously drawn
+					gl.clear(gl.COLOR_BUFFER_BIT);
+				}
+				if (cur_rendering == "sim_gameoflife" || cur_rendering == "sim_voronoi")
+				{
+					gl.clear(gl.COLOR_BUFFER_BIT);
+
+					// set seed of noise func
+					if (cur_rendering == "sim_gameoflife")
+					{
+						gl.uniform1f(seed_uniform_location, Math.random() * 10000);
+					}
+
+					// draw to texture
+					gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+					if (active_framebuf1)
+					{
+						gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuf1);
+					}
+					else
+					{
+						gl.bindFramebuffer(gl.READ_FRAMEBUFFER, framebuf2);
+					}
+
+					// draw to screen
+					gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+					gl.blitFramebuffer(0, 0, size, size, 0, 0, output_size, output_size, gl.COLOR_BUFFER_BIT,
+						(output_size > size ? gl.NEAREST : gl.LINEAR)); // use nearest for upscaling and linear for downscaling
+
+					// swap framebuffer
+					if (active_framebuf1)
+					{
+						gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf2);
+						gl.bindTexture(gl.TEXTURE_2D, texture1);
+					}
+					else
+					{
+						gl.bindFramebuffer(gl.FRAMEBUFFER, framebuf1);
+						gl.bindTexture(gl.TEXTURE_2D, texture2);
+					}
+					active_framebuf1 = !active_framebuf1;
+				}
+				else if (cur_rendering == "sim_grass")
+				{
+					gl.clear(gl.COLOR_BUFFER_BIT);
+
+					let grass_color = [].concat(init_grass_color);
+					for (let row = 0; row < num_rows; row++)
+					{
+						grass_color[0] /= grass_color_change;
+						grass_color[1] /= grass_color_change;
+						grass_color[2] /= grass_color_change;
+						gl.uniform3f(grass_color_location, grass_color[0], grass_color[1], grass_color[2]);
+						for (let i = 0; i < num_grass; i++)
+						{
+							_physic(cursor_x, cursor_y, cursor_dx, cursor_dy, size, size, points_ptr[row][i], velocity_ptr[row][i], grass_length[row][i], Math.sin(itercnt / 60) / 200, Math.random());
+
+							vertices =
+								[
+									Module.getValue(points_ptr[row][i], "float"),
+									Module.getValue(points_ptr[row][i] + 4, "float"),
+
+									Module.getValue(points_ptr[row][i] + 8, "float"),
+									Module.getValue(points_ptr[row][i] + 12, "float"),
+
+									Module.getValue(points_ptr[row][i] + 16, "float"),
+									Module.getValue(points_ptr[row][i] + 20, "float"),
+
+									Module.getValue(points_ptr[row][i] + 24, "float"),
+									Module.getValue(points_ptr[row][i] + 28, "float"),
+
+									Module.getValue(points_ptr[row][i] + 32, "float"),
+									Module.getValue(points_ptr[row][i] + 36, "float"),
+								]
+							//left right left right
+							const thickness = 3;
+							vertexbuffer = [
+								vertices[0] - thickness,
+								vertices[1],
+								vertices[0] + thickness,
+								vertices[1],
+							]
+							for (let i = 1; i < 4; i++)
+							{
+								let dy = (vertices[(i + 1) * 2 + 1] - vertices[(i - 1) * 2 + 1]);
+								let dx = (vertices[(i + 1) * 2] - vertices[(i - 1) * 2]);
+
+								//normalize
+								let dist = Math.sqrt(dy * dy + dx * dx);
+								dy /= dist; dx /= dist;
+
+								//rotate
+								[dx, dy] = [-dy, dx];
+
+								//thickness owo
+								dx *= Math.pow((4 - i) / 4, 1 / 5) * thickness, dy *= Math.pow((4 - i) / 4, 1 / 5) * thickness;
+
+								//add to buffer
+								vertexbuffer.push(vertices[i * 2] + dx);
+								vertexbuffer.push(vertices[i * 2 + 1] + dy);
+								vertexbuffer.push(vertices[i * 2] - dy);
+								vertexbuffer.push(vertices[i * 2 + 1] - dx);
+							}
+							vertexbuffer.push(vertices[8]);
+							vertexbuffer.push(vertices[9]);
+
+							for (let x = 0; x < vertexbuffer.length; x++)
+							{
+								vertexbuffer[x] /= 256;
+								vertexbuffer[x]--;
+							}
+
+
+							gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexbuffer), gl.STATIC_DRAW);
+
+							gl.drawArrays(gl.TRIANGLE_STRIP, 0, 8);
+						}
+					}
+				}
+
+				window.requestAnimationFrame(render);
+				itercnt++;
+			}
+
+
+			window.requestAnimationFrame(render);
+		}
+	</script>
+</body>
+</html>
