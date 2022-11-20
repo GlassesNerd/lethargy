@@ -57,19 +57,19 @@
 	<div>
 		<!--
 		<label for="sim_size">Simulation Size:</label>
-		<input type="number" id="sim_size" value="512" onchange="update_sim_size()"/>
+		<input type="number" id="sim_size" value="512" onchange="update_sim_size()" />
 		<br/>
 		<label for="view_size">View Size:</label>
 		<input type="number" id="view_size" value="512" onchange="update_view_size()"/>
 		<br/>
-			!-->
+		!-->
 		<div id="initial_points_div" hidden>
 			<label for="initial_points">Initial Points:</label>
-			<input type="number" id="initial_points" value="20"/>
+			<input type="number" id="initial_points" value="40" />
 		</div>
 		<div id="randomness_div">
 			<label for="randomness">Randomness:</label>
-			<input type="number" id="randomness" value="20"/>
+			<input type="number" id="randomness" value="20" />
 		</div>
 		<input type="button" id="restart" value="Restart Simulation" onclick="restart_sim()"></input>
 	</div>
@@ -357,7 +357,7 @@
 		gl.useProgram(gameoflife);
 		let seed_uniform_location = gl.getUniformLocation(gameoflife, "rand_seed");
 		gl.uniform1i(gl.getUniformLocation(gameoflife, "size"), size);
-		gl.uniform1f(gl.getUniformLocation(gameoflife, "temp"), parseFloat(document.getElementById("randomness").value));
+		gl.uniform1f(gl.getUniformLocation(gameoflife, "temp"), parseFloat(document.getElementById("randomness_div").value));
 
 
 		// initialize textures
@@ -496,7 +496,7 @@
 			const render = (timestamp) =>
 			{
 				// change render (simulation) size
-				if (new_render_size != -1 && new_render_size != size)
+				if (new_render_size != -1 && new_render_size < size)
 				{
 					size = new_render_size;
 
@@ -535,7 +535,7 @@
 					if (cur_sim == "sim_gameoflife")
 					{
 						document.getElementById("initial_points_div").setAttribute("hidden", "");
-						document.getElementById("randomness").removeAttribute("hidden");
+						document.getElementById("randomness_div").removeAttribute("hidden");
 
 						// non-antialiased context
 						gl = canvas.getContext("webgl2", { antialias: false });
@@ -570,7 +570,7 @@
 					else if (cur_sim == "sim_voronoi")
 					{
 						document.getElementById("initial_points_div").removeAttribute("hidden");
-						document.getElementById("randomness").setAttribute("hidden", "");
+						document.getElementById("randomness_div").setAttribute("hidden", "");
 
 						gl = canvas.getContext("webgl2", { antialias: false });
 
@@ -596,7 +596,7 @@
 					else if (cur_sim == "sim_grass")
 					{
 						document.getElementById("initial_points_div").setAttribute("hidden", "");
-						document.getElementById("randomness").setAttribute("hidden", "");
+						document.getElementById("randomness_div").setAttribute("hidden", "");
 
 						// antialiased context
 						gl = canvas.getContext("webgl2", { antialias: true });
